@@ -1,0 +1,423 @@
+---
+output: 
+  html_document:
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_chunk$set(fig.align = 'center')
+knitr::opts_chunk$set(out.extra = 'style="display:block; margin:auto;"')
+```
+# {.tabset .tabset-fade}
+
+## Summary
+
+    DICE: Dynamics of Interacting Community Epidemics  
+
+__Introduction__  
+The *DICE* package implements an influenza model with arbitrary spatial resolution, with the objective of making best use of available data at different spatial scales.   Building on previous work which was limited to a single spatial region, *DICE* uses a deterministic compartmental S-I-R model, applied on various interacting spatial scales, and a robust Markov-Chain-Monte-Carlo (MCMC) fitting procedure that can quickly characterize Influenza-Like-Illness (ILI) incidence profiles, of either coupled or uncoupled regions, in real-time providing estimates for:
+
+* Within, and if applicable between, region epidemic transmissibility (measured by the basic reproduction number $R_e$ and the next-generation matrix, if applicable).
+* Individual level epidemic severity (as described by the proportion $p_C$ of infections that result in clinical cases).
+
+
+Ultimately, it is envisioned that *DICE* will be a global influenza model that is able to use the smallest-resolution Influenza-Like-Illness data available.  The current version seen here focuses on United States data. 
+Publicly available weekly ILI data is included in the package (from the CDC and Google Flu Trends), along with weekly averaged specific humidity and school opening/closing schedules.  The last two sets of data are needed for three of the five different models for the time dependence of the basic reproduction number $R_{e}(t)$ that the User can choose from. CDC data is updated weekly with about a two week lag from observation to reporting.  It is available at both regional and national levels.  GFT data ceased to be publicly available in 2015, however is included here as a demonstration of finer-spatial-resolution fitting.  The GFT data included in *DICE* includes national, regional, and state levels. 
+
+The fundamental function of *DICE* is to calculate a probability distribution for the fit between ILI data and the chosen $R_e(t)$/*SIR* model. This is accomplished using an MCMC procedure.  Once the fit is complete, the model is run forward in time until the end of the season to create an ILI prediction with an associated confidence interval.  
+<br>
+<center>
+![](../vignettes/figures/CDCRegions.png)  
+</center>
+<br>
+
+
+Default settings will fit all available data-weeks for the current season and then create a prediction for the following 4 weeks.  However, we encourage the user to explore the effectiveness of *DICE* on previous seasons using the parameter *nweeksFit*.  *nweeksFit* sets the number of weeks of data to be fit.  When *nweeksFit* is less than the number of data-weeks, one can compare the DICE-generated 4-week prediction to actual data points from that year.
+
+__ILI Modeling__ 
+
+*DICE* gives the User the ability to model the **Population to model** incidence profile (to which we also refer as the: low resolution profile) using both low and high (sub-populations) spatial resolutions, with the latter often being able to explain various features that are observed in the low resolution ILI data but cannot be explained with a simple S-I-R model that includes only a single low-resolution spatial region. 
+
+Our MCMC fitting procedure always begins with a direct fit of the low-resolution (**Population to Model**) data without using any higher (sub-populations) spatial resolution data. This fit uses a deterministic S-I-R model described below with the objective of minimizing the maximum likelihood which is calculated using both the predicted and observed weekly ILI profiles.  Next, if requested by the User,  *DICE* will use the higher (sub-populations) spatial resolution data (and information such as the population of the spatial region, it's school vacation schedule and average weekly specific humidity) to try and predict the **Population to Model** profile.  This prediction can be done by either: (1)  Sequentially optimizing each sub-population spatial region independently (using the predicted and observed ILI profile of a single sub-region) and then calculating the **Population to Model** profile as the weighted sum of the individual sub-population profiles (with the weights given by the relative populations of each region), or (2) assuming that the **Population to Model** profile is the result of a more complicated dynamics of the coupled sub-populations spatial regions.  In this, numerically more demanding scenario, the S-I-R dynamics of the sub-regions are coupled and together generate the **Population to Model** profile which is optimized.  In the following two sections we describe the uncoupled and coupled schemes.
+
+- **Uncoupled Model**
+
+When modeling the ILI of an uncoupled set of populations, a deterministic compartmental S-I-R model is used with a time dependent reproduction number $R_{ej}(t)$ that is is unique to each sub-population ($j$):
+
+$$\dot{S_j} = -\frac{R_{ej}(t)}{T_g N_j}{S_jI_j}$$
+$$\dot{I_j} = \frac{R_{ej}(t)}{T_g N_j}{S_jI_j} - \frac{I_j}{T_g} $$
+$$\dot{R_j} = \frac{I_j}{T_g} $$
+
+Here $S_j$ represents the number of susceptible individuals in region $j$, $I_j$ is the number of infectious individuals in region $j$, $R_j$ is the number of recovered individuals in region $j$, and $N_{j}=S_j+I_j+R_j$ is the total population of the $j$th region.  The generation time, $T_g$, is assumed to be the same for all sub-populations. The time-parameter $t_{0j}$, which is unique for each region $j$, denotes the onset time of the epidemic in the region. It is used to set the initial conditions for the uncoupled S-I-R equations as follows:
+  $$S_j(t_{0j}) = N_{j}-I_j(t_{0j}) $$
+  $$I_j(t_{0j}) = I_j(t_{0j}) $$
+  $$R_j(t_{0j}) = 0 $$
+
+The S-I-R equations model the total population, but the data (either CDC or GFT) is the number of weekly observed cases or incidence rate ($I^R$).  The weekly incidence rate is calculated from the continuous S-I-R model by discretizing the rate-of-infection term $\frac{R_{ej}(t)}{T_g N_j}{S_jI_j}$: 
+
+$$I_j^R(t_i) = B_j + p_j^C \int_{t_i-1-\Delta_t}^{t_i-\Delta_t} \frac{R_{ej}}{T_g}\frac{ S_j(t) I_j(t)}{N_j} dt\;,$$
+
+scaling by percent clinical $p_C^j$, and adding a baseline $B_j$. $p_j^C$ is the proportion of infectious individuals that present themselves to a clinic with ILI symptoms and $B_j$ is a constant that estimates non-S-I-R or false-ILI cases. The integral runs over one week determining the number of model cases for week $t_i$.  $\Delta_t$ approximates the time delay from when an individual becomes infectious to when they visit a sentinel provider for ILI symptoms.  Unless otherwise specified, it is assumed that $\Delta_t=0.5$ weeks.    The above equation is how *DICE* relates its internal, continuous S-I-R model to the discrete ILI data.  
+
+
+As noted above, in both the uncoupled and coupled modes we begin by fitting the **Population to Model** incidence data directly using all the information we have on this region (nation in the CDC case and nation or HHS region in the GFT case), and the S-I-R eqs.. In the uncoupled case, if sub-populations were chosen, we continue and optimize each spatial sub-region independently (using the same S-I-R equations) and calculate the **Population to Model** profile indirectly as a weighted sum of the independent profiles of the sub-populations that compose it. The weight of each sub-region is determined by it's relative population.  In this uncoupled mode infection can occur only within a sub-region, there is no interaction (mobility) between sub-regions and the observed low-resolution, **Population to Model**,  ILI profile is the result of independent dynamics within decoupled spatial sub-regions.  
+
+
+- **Coupled Model**
+
+In the case of a coupled modeling of the **Population to Model** data, we begin as before by fitting the this data directly using the S-I-R equations presented in the previous section. This gives us the direct S-I-R fit to the **Population to Model** data which may or may not be able to describe the dynamics properly.  Next, following Mills and Riley, we describe a scenario where the **Population to Model**  profile is the result of the dynamics within and between higher resolution sub-populations that compose the larger low resolution Model population. In this coupled scenario the rate at which a susceptible person in sub-population $j$ becomes infected depends on: (1) the risk of infection from those in the same population $j$, (2) the risk of infection from infected people from population $i$ who traveled to population $j$, and (3) the risk of infection encountered when traveling from population $j$ to population $i$.  In the uncoupled case only the first term, which we expect to be dominant for nation/region/state level data, is present.  To account for these three mechanisms, Mills and Riley defined the force of infection, or the average rate that susceptible individuals in sub-region $i$ become infected per time step, as: 
+
+$$\lambda_{i}(t) = \sum_{i=1}^{D}{\beta_j m_{ij}} \frac{\sum_{l=1}^{D}{m_{lj}I_l}}{\sum_{p=1}^{D}{m_{pj}N_p}} $$
+
+where $D$ is the total number of sub-populations(regions) and in our-case $\beta_j$ is allowed to depend on time: $\beta_j(t)=\frac{R_{ej}(t)}{T_g}$. Given this force of infection we can write the coupled S-I-R equations for each sub-populations as:
+$$\frac{dS_j}{dt} = - \lambda_j(t)S_j, $$
+$$\frac{dI_j}{dt} = \lambda_j(t)S_j - \frac{I_j}{T_g}, $$
+$$\frac{dR_j}{dt} = \frac{I_j}{T_g}.$$
+
+The above Equations are the coupled version of the simpler S-I-R eqs. (see Uncoupled Model above) and they reduce to them in the limit of no mobility between sub-populations. In this case the mobility matrix $m_{ij}$ is the identity matrix so that $\lambda_{i}(t) =  \beta_i(t) \frac{I_i}{N_i}=\frac{R_{ei}(t)}{T_g}\frac{I_i}{N_i}$.
+
+The mobility model we use, which follows Mills and Riley directly, defines each element of $m_{ij}$ as the probability for an individual from sub-population $i$, given that he/she made a contact, that this contact was with an individual from sub-population $j$:
+
+$$m_{ij} = N_j \kappa(r_{ij})\frac{1}{\sum_{k} {N_k\kappa(r_{ik})}} $$
+
+where $\kappa(r_{ik})$ is the interaction kernel between sub-populations. This kernel is expected to depend on the geographic distance between the sub-populations ($r_{ij}$) and Mills and Riley have chosen to use a variation of the off-set power function for this kernel:
+
+$$\kappa(r_{ij}) = \frac{1}{1+{(r_{ij}/s_d)}^\gamma}$$
+
+where $s_d$ is a saturation distance in $km$ and the power $\gamma$ determines the amount of mixing between the sub-regions: The lower is $\gamma$ the more mixing we have.  In our MCMC procedure these two parameters are optimized. 
+
+At each step in the MCMC procedure we compute the coupled S-I-R equations for all the sub-regions and calculate the weekly infection rate of the sub-populations.  We then construct the **Population to Model** incidence rate as the weighted sum of these individual sub-population incidence rates (with the weight of each sub-population $j$ determined by $N_j/\sum_{j=1}^{D}{N_j}$). It is important to note that in this procedure the individual high-resolution sub-population incidence rates are $never$ optimized directly. We only optimize their weighted sum using the **Population to Model**  incidence rate as our target.  This is unlike the uncoupled procedure where we optimize $each$ sub-population separately and then use our best results (as well as the posterior density) to provide a best estimate (and a range) for the **Population to Model** incidence rate.  The computational time for the Coupled Model is about five times greater than that of the Uncoupled Model.
+
+
+
+
+
+
+## Input Fields
+
+__Continent:__ Choose continent
+
+__Nation:__ Choose country
+
+__Type of data to model__  
+At present, the BSVE *DICE*   application supports use of Centers for Disease Control (**CDC**) and Google Flu Trends (**GFT**) sources for Influenza Like Illness (ILI) data in the United States.   
+
+- CDC -- Temporally, the data runs from 2003-present.  Spatially, CDC data is available at the national and regional level.  The table below outlines the regions as designated by the Department of Health and Human Services (**HHS**).
+
+>
++----------+-----------------+
+|HHS Region| States included |
++==========+=================+
+|   1      | MA, NH, MA, RI, CN, VT|
++----------+-----------------+
+|   2      | NY, NJ, PR      |  
++----------+-----------------+
+|   3      | PA, DE, MD, WV, VA, DC|
++----------+-----------------+
+|   4      | KY, TN, NC, SC, GA, FL, AL, MI|
++----------+-----------------+
+|   5      | MN, WI, IL, IN, MI, OH|
++----------+-----------------+
+|   6      | NM, TX, OK, AR, LA|
++----------+-----------------+
+|   7      | NE, KS, IA, MO  |
++----------+-----------------+
+|   8      | UT, CO, WY, MT, SD, ND|
++----------+-----------------+
+|   9      | CA, NV, AZ, HA  |
++----------+-----------------+
+|  10      | OR, WA, ID, AK  |
++----------+-----------------+
+
+
+- GFT -- Data is available for seasons starting 2003-2014.  Spatially, GFT data is available at the national, regional, and state levels. 
+
+__Start year__  
+Select the flu-season to be modeled by the year in which the flu-season begins. (For example for the 2013-2014 season select 2013.)
+
+__nweeksFit__  
+Number of weeks of the dataset to fit (starting from the beginning of the season). By setting *nweeksfit* to be less than the number of data points, the user can compare the predicted and observed ILI for weeks after *nweeksFit*.
+When modelling the current season, even if *nweeksFit* equals the number of weeks of data the code will calculate ILI profiles for the entire flu season - providing a forecast for all future weeks. 
+
+__Population to Model__  
+One of the abilities of *DICE*   is to model the ILI of a population using the coupled dynamics of the population's sub-populations.  For instance one might want to fit a coupled model of all 50 states in order to create a forecast for the United States as a whole.  The "population to model" is the population for which a forecast is generated.
+
+__Sub-Populations to Fit__  
+This selection specifies which level of sub-population will be used for the coupled (or uncoupled) model fit.
+
+__nMCMC__  
+This is the number of random steps that the MCMC procedure attempts. Select $10^4$ steps for a quick demonstration (likely will not converge), $10^5$ steps for a short MCMC run, and $10^6$ steps (or more) for more robust results.
+
+__nreal__  
+Number of MCMC realizations to run. Each realization begins with a random initial guess in parameter space. When attempting to quickly find the most-likely model fit, it can be useful to run multiple realizations for moderate-length _nMCMC_ MCMC chains.
+
+__EMCEE__  
+
+- Standard -- Employs an MCMC procedure to determine the most likely fit of the model to the data.  The MCMC algorithm consists of a single walker attempting _nMCMC_ random steps. 
+  
+- EMCEE -- Employs an ensemble-based MCMC-type procedure to determine the most likely fit of the model to the data. The EMCEE algorithm consists of _nwalk_ randomly-coupled walkers and generally requires fewer random steps _nMCMC_ than the MCMC procedure.
+
+__Select model__  
+The *DICE* package allows the user to select from five different models for the time-dependent reproduction number, $R_e(t)$:
+
+1.  Specific humidity only
+2.  School vacation only
+3.  School and specific humidity terms
+4.  $R_e$ is constant in time 
+5.  Stepped--$R_e$
+
+__Uncoupled Calculations__  
+When this option is selected each of the sub-populations is fitted independently and the __Population to Model__ is then calculated as the weighted sum of these individual fits.  In this uncoupled mode infection can occur only within a sub-population, there is no interaction (mobility) between sub-populations and the observed __Population to Model__  ILI profile is the result of independent dynamics within decoupled higher resolution spatial sub-populations. 
+By default *DICE* fits the __Population to Model__ ILI profile using a spatially coupled model that allows for transmission both within and between sub-populations.  
+In both the coupled and uncoupled mode *DICE* also fits the __Population to Model__ directly. This simple S-I-R fit will typically fail to properly describe any features that arise from the underlying sub-populations dynamics. 
+For more information about the Coupled and Uncoupled Models see the __Summary__ Tab.
+
+
+#### Advanced Settings
+__Start week__  
+The week of *start year* to begin the ILI profile. This week should be at least 5 weeks before any significant ILI activity.
+
+__Calc Weeks__  
+Number of weeks to include in the profile-year.  This should only include one flu season.
+
+
+## $R_e(t)$ Models
+The seasonality of influenza in temperate climates suggests that the reproduction number $R_e$ is time dependent.  
+*DICE* allows the User to apply five different models for the time dependent reproduction number, $R_e(t)$.  To implement this, we write the transmission term in the most general way as a product of the basic reproduction number, $R_{0}$, multiplied by the various time dependent terms:
+ 
+ $$ R_{e}(t)=R_{0} \cdot {F_1(t)}\cdot{F_2(t)} \cdot {F_3(t)} $$
+ 
+The first time dependent term $F_1(t)$, allows for a dependence of the transmission rate on specific-humidity (SH). In a series of papers Shaman et al. and others have argued that both transmission and survival of the influenza virus are affected by specific humidity.  In temperate regions specific humidity has a seasonal oscillation with a minimum in the winter and a maximum in the summer.  We follow Shaman et al.  and relate the SH, $q(t)$, to the reproduction number as:
+
+$$ F_1(t) = 1+\Delta_{R}\cdot{\mathrm{e}^{-a \cdot q(t)}} $$
+
+In the above equation, and unlike the work published by others, the values of the parameters $a$ and $\Delta_{R}$ are fitted. The SH term $F_1(t)$ is included in models 1 and 3.  The details of data collection and processing is discussed below in the _model summary_.
+
+The second time dependent term $F_2(t)$ allows for dependence of the transmission rate on the school vacation schedule.  During the 2009-2010 H1N1 pandemic health officials around the world had to consider the potential benefits of reducing transmission by closing schools, against the high economic and social costs of such a drastic measure.  In our formulation the transmission rate depends on weekly school closures $p(t)$ as follows:
+
+$$ F_2(t) = 1 - \alpha \cdot p(t) \;. $$
+
+The value of $p(t)$ represents school vacation in a region/state for the week $t$. Based on the proportion of schools closed and number of days closed, $p(t)$ is assigned a value in the range $[0,1]$.  For example in week $t_i$, if all schools are closed for the entire week then $p(t_i)=1$.  However, if all schools have Monday and Tuesday off (missing 2 of 5 days), then  $p(t_i)=0.4$.  Similarly, if 3 of 10 schools have spring break (entire week off), but the other 7 schools have a full week of class then $p(t_i)=0.3$.  And of course if all schools have a full week of class then $p(t_i)=0$.
+
+*DICE* fits the effect of school vacations by optimizing the parameter $\alpha$, which is in the range $0-1$.  Larger values of $\alpha$ indicate a more significant lowering of $R_e$ as a result of school vacations. Conversely small values of $\alpha$ indicate that the school vacation schedule is not an important factor in determining the ILI profile.   To study the effect of the school vacation schedule, the User needs to select $model= 2$.
+
+To study the effects of both specific humidity and the school vacation schedule, the User needs to select $model=3$.
+
+The third, and last, time-dependent term, $F_3(t)$, has a simple "box-like" shape and it allows the User to model an arbitrary behavior modification that can drive the transmission rate up or down for a limited period of time:
+$$ F_3(t) = 1 + \Delta \cdot H(t) $$
+where
+$$
+H(t) = \left\{ \begin{array}{ll}
+1 & \mbox{when $t_s \le t < t_f $} \\
+0 & \mbox{otherwise}
+ \end{array}
+ \right.
+$$
+Here $\Delta$ is the magnitude of change to $R_e$, $t_s$ is the start time for the change, and $t_f$ is the final time.  
+By allowing the parameter $\Delta$ to be in the range $[-1,1]$, *DICE* can model an increase or decrease in transmission due to behavior modification, multi-strain epidemics, etc.   $F_3(t)$ is selected by choosing $model = 5$. This model has been successfully used to describe the complex H1N1 dynamics in military installations during the 2009-2010 pandemic season, see refs. 
+
+
+Finally, the User can choose to use a simple S-I-R model with a constant transmission rate ($model=4$):
+$$ R_e(t) = R_{0}\;. $$
+
+#### Summary of Models  
+As described above, there are a number of ways to define $R_e(t)$.  The *DICE* package allows the User to select from five different $R_e(t)$ models.  The table below contains a brief description of each model and specifies which parameters are being optimized.
+
++---------+------------------------------------+-----------------------------------+
+| Model # |      Description                   |    Optimized Parameters           |
++=========+====================================+===================================+
+|  1      | Specific Humidity only             | $R_{0},\Delta_R,a,t_0,B,pC$       |
++---------+------------------------------------+-----------------------------------+
+|  2      | School vacation only               | $R_{0},t_0,B,pC,\alpha$           |
++---------+------------------------------------+-----------------------------------+
+|  3      | School and specific humidity terms | $R_{0},\Delta_R,a,t_0,B,pC,\alpha$|
++---------+------------------------------------+-----------------------------------+
+|  4      | Constant $R_e(t)$                  | $R_{0},t_0,B,pC$                  |
++---------+------------------------------------+-----------------------------------+
+|  5      | Stepped-$R_e(t)$                   | $R_{0},t_0,B,pC,\Delta,t_s,dur$   |
++---------+------------------------------------+-----------------------------------+
+
+
+Several example $R_e(t)$ profiles using the 2014-2015 SH and SV data are shown in figure 4.1 (green lines in all four panels).  Here, the specific humidity and school vacation schedule from CDC region 5 is used.  The figure depicts sample $R_e(t)$ profiles for models 1, 2, 3, and 5.  The profile for model 4 is constant ($R_e(t)=R_{0}$) and therefore has been omitted from the illustration.  In these figures, the cyan markers denote scheduled school breaks and the height of the marker indicates the proportion of student-days missed for a given week.  A marker height of 0.5 indicates that all schools are out for the entire week and lower values indicate less days/schools on break.  Where all schools are in session for the entire week, no marker has been plotted.  (This does not take into account sick-days for individual students.)  The brown, sin-like jagged line denotes the weekly averaged SH for HHS region 5 during the 2014-2015 season.  In the northern hemisphere is is lower in the winter and has a negative correlation with the ILI profile.  (This line is the same in all four panels - since they all depict the same HHS region.) The   The top-left illustrates a simple two-value step function $model = 5$.  The primary value of $R_e(t)$ is $R_{0}$, then for $dur$ weeks starting at $t_s$, the value of $R_e(t)$ increases(decreases) to $R_{0}*(1+\Delta)$.  In the top-right plot, model 1 is considered. Here $R_e(t)$ depends only on the specific humidity.  A $R_e(t)$ profile resulting from model 2 (school vacations) appears in the bottom left.  Finally, the lower-right plot shows the combined effects of school closures and specific humidity present in model 3.
+
+<center>
+![](../vignettes/figures/RoftModel5.png)
+![](../vignettes/figures/RoftModel3.png)  
+![](../vignettes/figures/RoftModel2.png)
+![](../vignettes/figures/RoftModel1.png)  
+**Figure 4.1: $R_e(t)$ profiles for the model parameters: $R_{0}=1.1,\Delta_R=0.6,a=300,\alpha=0.3,t_s=18,dur=23,\Delta=0.25$. (Top Left) model 5: stepped-$R_e(t)$. (Top Right) model 1: specific humidity only.  (Bottom Left) model 2: school only. (Bottom Right) model 3: school and specific humidity terms.**
+</center>
+<br>
+
+## DICE Data
+
+Currently, the data incorporated into *DICE* includes ILI profiles, United States state-level population estimates, specific humidity satellite imagery, and school vacation schedule approximations.  The following section details where the data was collected from and how it was processed.
+
+__ILI Data__  
+The CDC  Influenza-like Illness Surveillance Network (ILINet) Human and Health Services (HHS) region and national data were downloaded from the CDC-hosted web application FluView: http://gis.cdc.gov/grasp/fluview/fluportaldashboard.html. For the current flu season, *DICE* first attempts to download CDC ILI data using the R-package *cdcfluview*. This ensures that *DICE* is using the most up-to-date CDC data available.  If the data is temporarily unavailable, or cannot be accessed, *DICE* will use the data it has for the current season and notify the User that internal data, which may not be up-to-date, is used.
+
+The CDC Patient ILINet consists of more than 2,900 outpatient healthcare providers in all 50 states, Puerto Rico, the District of Columbia and the U.S. Virgin Islands reporting more than 30 million patient visits each year. Each week, approximately 2,000 outpatient healthcare providers around the country report data to CDC on the total number of patients seen and the number of those patients with influenza-like illness (ILI) by age group (0-4 years, 5-24 years, 25-49 years, 50-64 years, and $\geq65$ years). For this system, ILI is defined as fever (temperature of 100F or greater) and a cough and/or a sore throat without a KNOWN cause other than influenza.  Sites with electronic health records use an equivalent definition as
+determined by public health authorities.  The CDC Influenza surveillance data collection is based on a reporting week that starts on Sunday and ends on Saturday of each week.  With the exception of the 2009 influenza pandemic, each flu season starts on Week 27 and ends on Week 26 of the following year.  For 2009, the flu season started Week 13, 2009 (3-30-2009) and ended Week 26, 2010 (6-28-2010). For more information on ILINet see: http://www.cdc.gov/flu/weekly/overview.htm. 
+
+Because *DICE* requires an absolute number of incidences per week, the CDC ILINet data is converted from percent ILI cases per patient to ILI cases.  We estimate the absolute number of weekly ILI cases by dividing the weighted percent of ILI cases in the CDC data ("X.WEIGHTED.ILI" column) by 100 and multiplying it by the total weekly number of patients.  Total weekly patients is estimated as: (total population) x (2 outpatient visits per person per year) x (1 year/52 weeks).
+
+
+Google Flu Trends data (at the national, state and city level) was obtained directly from the GFT web site: http://www.google.org/flutrends/us/data.txt. GFT attempts to quantify ILI cases through a proprietary model using key terms from search queries.  GFT ILI estimates were publicly accessible from Week 39, September 28th, 2003 to Week 32, August 9th, 2015. The GFT data is aggregated to the same ten HHS regions as for the CDC data and the flu seasons were also defined using the same dates.  In addition, some of the GFT data is available at state levels.  To create a state-level dataset that spans all available years, the GFT data in *DICE* consists of two different GFT model updates.  The 2003-2013 flu seasons are covered by GFT data from the 2013 model-update.  Then the 2014-2015 season is covered by GFT data from the 2014 model-update.
+
+
+__Specific Humidity Data__ 
+
+Specific humidity is provided by *DICE* using the Phase-2 of the North American Land Data Assimilation System (NLDAS-2) data base provided by NASA http://ldas.gsfc.nasa.gov/nldas/NLDAS2model.php/. The NLDAS-2 data base provides hourly specific humidity (measured 2-meters above the ground) for the continental US at a spatial grid of $0.125^{\circ}$ which we average to daily and weekly SH. The weekly data is then spatially-averaged for the states and CDC regions.  For Alaska, Hawaii, and Puerto Rico we obtain the SH data from NOAA's NCEP-NCAR Reanalysis project (see for example: http://iridl.ldeo.columbia.edu/SOURCES/.NOAA/.NCEP-NCAR/.CDAS-1/.DAILY/.Diagnostic/.above_ground/.qa/ which provides daily (again 2-meter above ground) SH data on a spatial grid of $2.5^{\circ}$ for the entire world.  This data is averaged and interpolated using the same procedure as for the NLDAS-2 data set. The *DICE* SH data base is continually updated using these two data set sources.
+
+
+__School Vacation Data__
+
+For the state, school vacation schedules were approximated by averaging the public school vacation schedule from the three largest cities in that state for the 2014-15 and 2015-16 school years.  Approximations for region schedules are determined by a population-weighted average of state schedules.  The same process is then applied to the regions to recover a national school schedule.  For each week, $t$, and for each state/region/nation we assign a value, $p(t)$, in the range $[0,1]$ that is based on the proportion of schools closed and number of days closed.  For example in week $t_i$, if all schools are closed for the entire week then $p(t_i)=1$.  However, if all schools have Monday and Tuesday off (missing 2 of 5 days), then  $p(t_i)=0.4$.  Similarly, if 3 of 10 schools have spring break (entire week off), but the other 7 schools have a full week of class then $p(t_i)=0.3$.  And of course if all schools have a full week of class then $p(t_i)=0$.
+
+__Population Data__  
+Denominator civilian data was obtained from the US 2010 census data
+center: http://www.census.gov/2010census/data/.  The estimated
+inter-censal state and national population sizes between 2000 and 2010
+were obtained from: http://www.census.gov/popest/data/intercensal/state/state2010.html
+and  http://www.census.gov/popest/data/intercensal/state/tables/ST-EST00INT-01.csv.
+The projected state and national population sizes from 2010-2015 were
+obtained from: http://www.census.gov/popest/data/datasets.html
+and  http://www.census.gov/popest/data/state/totals/2015/tables/NST-EST2015-01.csv. 
+Each region population size was calculated by summing the population sizes of every state in the region.
+
+## Fitting Procedure
+
+The *DICE* ILI fitting procedure determines the joint posterior
+distribution for the model parameters (once the User chooses a model, these parameters are selected for optimization as explained in the previous section) using a Metropolis-Hastings Markov
+Chain Monte Carlo (MCMC) procedure.  It should be stressed that although we often refer to the MCMC algorithm in the context of an optimizer, it is better characterized as a probability distribution mapping routine.  As such, the random walk will likely spend the majority of its time in the neighborhood of the optimal (most likely) solution.  However it's purpose is to find a distribution of most-likely solutions, not necessarily the best solution.
+
+After the User selects a model number for $R_e(t)$ (which triggers *DICE* to set TRUE/FALSE values for parameters that need/not be optimized), the User needs to tell *DICE* how
+many MCMC chains to run and how many steps to take in each
+chain. *DICE* will then randomly initialize the parameters that are
+optimized (using a log-uniform distribution for all the parameters
+except the one that can be negative) integrate the coupled S-I-R and
+influenza incidence equations and generate a candidate ILI profile. The
+likelihood of this solution is calculated using the Akaike Information Criterion (AIC), which is a measure of the relative goodness of fit of a model:
+
+
+$${\rm AIC} = -2 \log (L(\hat{\theta}| I_C)) + 2 K$$
+
+where $\log (L(\hat{\theta} | I_C))$ is the value of the maximized log-likelihood over the model parameters ($\theta$), given the observed cases $I_C$. 
+When the total number of parameters ($K$) is large relative to the sample size ($n$), the reduced Akaike Information Criterion is preferred: 
+
+
+$${\rm AIC}_c = -2 \log (L(\hat{\theta})) + 2 K + \frac{2 K (K+1)}{(n - K - 1)}$$
+
+and this is what *DICE* uses.   The log-likelihood stems from a Poisson probability density 
+
+$$  \log (L(\theta| I_C)) = \sum_i w_i \Big(I_C(t_i)\cdot \log\big(I_R(t_i,\theta)\big) - I_R(t_i,\theta) - \log\big(I_C(t_i)!\big) \Big)\;,$$
+ 
+ where $I_R(t_i,\theta)$ is the model point generated for week $t_i$ as a result of parameter set $\theta$. Additionally, the vector $w$ has been added to allow the User to vary the weight given to each weekly data point. To maximize $\log (L(\theta| I_C))$, the value of this likelihood is compared to a new likelihood calculated using a set of randomly displaced parameters in a standard rejection method to determine if the move is accepted or rejected.  This MCMC procedure is executed as
+many times as the User has defined (this is the chain's length mentioned above) and *DICE* keeps the history of the chain parameters and $AIC_c$ values. 
+Once a chain is completed, it's history statistics and results are summarized and written to tables (csv format), a binary *RData* file and pdf/png plots. The detailed output provided by *DICE* enables the User to: 
+
+  * Quickly look at the plots and evaluate the procedure/results.
+  * Generate detailed reports using the plots and tables prepared by \pkg{DICE}.
+  * Use the history of the MCMC chain to calculate any additional statistics/properties.
+
+
+
+## Output
+
+#### Input Parameters Table  
+A list of the parameter values that are seeded into the MCMC procedure.
+<br><br>
+
+#### Parameter Fits Table  
+The mean and variance of all parameters that were fit during the MCMC procedure.
+<br><br>
+
+#### Results Plot 
+
+__Fit Population = Model Population__  
+When the _Population to Model_ is also selected as the _Subpopulation to Fit_, *DICE* simply fits the model to the single data profile and combines all output images to a single file.  For example, in figure 3.1 we have chosen _Population to Model_="United States" and _Subpopulation to Fit_="United States".  The first image shows the incidence data in black and the best fit in red.  Recall that the MCMC procedure maps the probability distribution in parameter space.  The mean and variance of this distribution, as expressed by the SIR model, are depicted as blue and grey respectively.  Centered in the top row is a histogram comparing the model peak-week probability to the actual peak week.  The remaining images each depict one of the four prediction weeks. Here the model-fit %ILI distribution is plotted over the actual %ILI. 
+<center>
+![**Figure 3.1: Sample DICE output using the following parameter values: year=2015, dataType='cdc', model=5, nweeksFit=41, nMCMC=10^5^.**](../vignettes/figures/results-cdc-United.States-2015-2016-5-41-1.png)  
+**Figure 3.1: Sample DICE output using the following parameter values: _Population to Model_="United States", _Subpopulation to Fit_="United States", year=2015, dataType='cdc', model=5, nweeksFit=41, nMCMC=10^5^.**
+</center>
+<br><br>
+
+__Fit Population = Multiple Subpopulations of Model Population__  
+An example result is shown in figure 3.2. Here the colored profiles (first 10) show individual ILI fits for the 10 HHS Regions.  Weekly CDC ILI data points are plotted as black markers connected by black line segments.  The CDC's definition of onset level is plotted as a dashed grey line and is constant in time.  Notice that there are many fit-curves plotted for each region/nation.  These are a sampling of MCMC trials and represent the likelihood of parameters using model 5.   The vertical grey bar indicates the `forecast' weeks.  As a result of $nweeksFit=41$, data in and to the right of the grey bar have not been used for the fitting procedure.  Therefore the continuation of fitting curves works as a forecast for the remaining weeks.  This is also indicated by the fit-curves transitioning to dashed-lines.  Following the regional profiles are two different national fits.  These have been magnified in figure 3.3.  The plot on the left is an uncoupled, population-weighted average of the regional fits. On the right is the result of directly fitting the national data using model 5.
+
+<center>
+![**Figure 3.2: Sample DICE output, %ILI as a function of Epidemic Week (EW) using the following parameter values: year=2015, dataType='cdc', model=5, nweeksFit=41, nMCMC=10^5^.**](../vignettes/figures/results-cdc-2015-2016-5-41-1.png)  
+**Figure 3.2: Sample DICE output, %ILI as a function of Epidemic Week (EW) using the following parameter values: year=2015, dataType='cdc', model=5, nweeksFit=41, nMCMC=10^5^.**
+</center>
+<br>
+<center>
+![](../vignettes/figures/US2015_region_fit.png) ![](../vignettes/figures/US2015_direct_fit.png)  
+**Figure 3.3: Comparing results of a direct fit (right) and region-fit (left) for 2015-2016 national ILI**
+</center>
+<br><br>
+
+#### Predicted-Week Historgrams
+The FileType 'hist-week-max' are .pdf files that show the likelihood distribution of peak weeks at both the model and fit level.  The images in figure 3.4 come from the file named "hist-week-max-cdc-United.States-uncpl-2015-2016-5-41-1.pdf".  In these histograms the ILI incidence peaks have been binned by epidemic week number.  The data has a single peak value and is therefore represented by a single blue bar.  The MCMC fitting procedure results in a distribution that is depicted by green bars.  Overlap of data and fit bars is appears as magenta.
+
+<center>
+![](../vignettes/figures/Reg1_2015_hist_peak.png) ![](../vignettes/figures/USdirect_2015_hist_peak.png)  
+**Figure 3.4: Sample histograms for the ILI peak-week distribution. For Region 1 (left) the blue bar depicts the peak data week and the green bars show the distribution of peak weeks found by MCMC fit. The overlap between the fit and data histograms appears as magenta. The national direct-fit (right) is colored similarly.**  
+</center>
+<br><br>
+
+#### Peak Week Histograms
+The FileType 'hist-prfl' are .pdf files that show the likelihood distribution for each of the forecast weeks at both the model and fit levels.  Figure 3.5 \ref{fig:hist_fore} shows the forecast epidemic weeks 15-18 for HHS Region 1.  These images were extracted from the file "hist-prfl-cdc-United.States-uncpl-2015-2016-5-41-1.pdf".  As was done in the CDC flu challenge, \%ILI is separated into 0.5\%-sized bins.  These plots allow one to compare what *DICE*   predicts for a forecast week to the actual observed \%ILI for that week.  Similar to the previous histogram, the data bar is blue and the forecast bars are green.  Again, where there is overlap between the data bar and forecast distribution, the bar has been colored magenta.  Note that the histograms have been normalized such that the area under the distribution is equal to 1.  Thus the bin size of 0.5 dictates a max bar height of 2.
+
+<center>
+![**Figure 3.5: Sample histogram for the ILI forecast weeks of a Region 1 fit. Each plot represents the distribution of %ILI for a single forecast week. As with the previous figures, this results from the parameters: year=2015, dataType=‘cdc’, model=5, nweeksFit=41, nMCMC=10^5^.**](../vignettes/figures/Reg1_2015_hist_forcast.png)  
+**Figure 3.5: Sample histogram for the ILI forecast weeks of a Region 1 fit. Each plot represents the distribution of %ILI for a single forecast week. As with the previous figures, this results from the parameters: year=2015, dataType=‘cdc’, model=5, nweeksFit=41, nMCMC=10^5^.**
+</center>
+<br><br>
+
+#### Additional Data Files
+Here we briefly summarize the contents of the data files generated by a `runDICE()` simulation.  The five types of data files produced by *DICE*   are described below.  These files are available using the download options that appear after completion of the fitting process.
+
+__Input Data and Parameters__  
+FileType 'input' records all of the model and data inputs to the fitting procedure.  In this example the filename is "input-cdc-United.States-uncpl-2015-2016-5-1.RData".  This file contains two R objects, the first is called 'input' and details all model parameter values (generated from User inputs).  The second object `mydata' contains all data generated by *DICE*   for the simulation.
+
+__MCMC Chain__  
+The raw results from the MCMC fitting procedure are contained in the 'mcmc' FileType.  For this example the filename is "mcmc-cdc-United.States-uncpl-2015-2016-5-41-1.RData".  The R object 'results.list' is a list of MCMC chains.  There is one list entry for each population that was fit during the MCMC procedure.  Each list entry is a representative sampling of the MCMC history.  This takes a matrix form with each row corresponding to a sample and each column an optimized parameter.  This file is the primary output of a simulation, and it is also useful for the purpose of restarting the chain.
+
+__ILI Profiles__  
+The 'profiles' FileType is and .RData that stores a representative sample of ILI profiles generated by the MCMC chain.  For this example it is named "profiles-cdc-United.States-uncpl-2015-2016-5-41-1.RData".  This file contains all information needed to plot the direct and aggregate profiles on the model-level.
+
+__Forecast Weeks LLK__
+When the forecast weeks overlap with observed data, the Log-LiKelihood (LLK) is calculated and stored in FileType 'llk'.  For the example simulation in this section the filename is: "llk-cdc-United.States-2015-2016-5-41-1.csv".  This information is useful for quantitatively comparing forecasts of the aggregated and direct fits.
+
+__Gaussian Fit__
+The file "gaussian-fit-cdc-United.States-uncpl-2015-2016-5-41-1.csv" contains a mean and variance for each optimized parameter.  This procedure fits a single variable Gaussian to the parameters one-by-one.  While this approximation of mean and variance is often quite useful, it should be noted that the distribution returned by the MCMC procedure is a function of many parameters.  The parameters are interdependent, and thus a single variable Gaussian may be a poor approximation of the large-dimension distribution. Nevertheless, these fits are useful if the User wishes to use a prior distribution in the MCMC procedure.  This has been explored in the context of the CDC challenge for the 2015-2016 flu season.
+
+## Resources
+
+For a more complete explanation of methodology, see the *DICE* [manual](www.leidos.com/DICE/manual.pdf).
+
+__References__
+
+1. Pete Riley, Michal Ben-Nun, Richard Armenta, Jon A. Linker, Angela A. Eick, Jose L. Sanchez, Dylan George, David P. Bacon, and Steven Riley. Early characterization of the severity and transmissibility of pandemic influenza using clinical episode data from multiple populations. _PLoS Comput Biol_, 9(5):1–15, 05 2013.  http://dx.doi.org/10.1371\%2Fjournal.pcbi.1003064
+
+2. Pete Riley, Michal Ben-Nun, Jon A. Linker, Angelia A. Cost, Jose L. Sanchez, Dylan George, David P. Bacon, and Steven Riley. Early characterization of the severity and transmissibility of pandemic influenza using clinical episode data from multiple populations. _PLoS Comput Biol_, 11(9):1–15, 09 2015. http://dx.doi.org/10.1371\%2Fjournal.pcbi.1004392
+
+3. Harriet L. Mills and Steven Riley. The spatial resolution of epidemic peaks. _PLoS Comput Biol_, 10(4):1–9, 04 2014. http://dx.doi.org/10.1371/journal.pcbi.1003561
+
+4. Kenneth E Mitchell, Dag Lohmann, Paul R Houser, Eric F Wood, John C Schaake, Alan Robock, Brian A Cosgrove, Justin Sheffield, Qingyun Duan, Lifeng Luo, et al. The multi- institution north american land data assimilation system (nldas): Utilizing multiple gcip products and partners in a continental distributed hydrological modeling system. _J Geophys Res-Atmos_, 109(D7), 2004.
+
+5. Youlong Xia, Kenneth Mitchell, Michael Ek, Justin Sheffield, Brian Cosgrove, Eric Wood, Lifeng Luo, Charles Alonge, Helin Wei, Jesse Meng, et al. Continental-scale water and energy flux analysis and validation for the north american land data assimilation system project phase 2 (nldas-2): 1. intercomparison and application of model products. _J Geophys Res-Atmos_, 117(D3), 2012. 
+
+6. Eugenia Kalnay, Masao Kanamitsu, Robert Kistler, William Collins, Dennis Deaven, Lev Gandin, Mark Iredell, Suranjana Saha, Glenn White, John Woollen, et al. The ncep/ncar 40-year reanalysis project. _B Am Meteorol Soc_, 77(3):437–471, 1996.
+
+7. Anice C Lowen, Samira Mubareka, John Steel, and Peter Palese. Influenza virus trans- mission is dependent on relative humidity and temperature. _PLoS Pathog_, 3(10):e151, 2007.
+
+8. Alan I Barreca and Jay P Shimshack. Absolute humidity, temperature, and influenza mortality: 30 years of county-level evidence from the united states. _Am J Epidemiol_, 176(suppl 7):S114–S122, 2012.
+
+9. Jeffrey Shaman and Melvin Kohn. Absolute humidity modulates influenza survival, trans- mission, and seasonality. _PNAS_, 106(9):3243–3248, 2009. 
+
+10. Jeffrey Shaman, Virginia E. Pitzer, C ́ecile Viboud, Bryan T. Grenfell, and Marc Lipsitch. Absolute humidity and the seasonal onset of influenza in the continental united states. PLoS Biol, 8(2):1–13, 02 2010.
+
+11. Jeffrey Shaman, Edward Goldstein, and Marc Lipsitch. Absolute humidity and pandemic versus epidemic influenza. _Am J Epidemiol_, 173(2):127–135, 2011.
+
